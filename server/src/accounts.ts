@@ -252,3 +252,145 @@ export async function enableAccount(input: {
     db.close();
   }
 }
+
+export interface SeedUserConfig {
+  username: string;
+  role: UserRole;
+  password: string;
+  description: string;
+}
+
+export function parseSeedUsersFromEnv(env?: NodeJS.ProcessEnv): SeedUserConfig[] {
+  const targetEnv = env ?? process.env;
+  const patientUsername = validateUsername(targetEnv.DEMO_PATIENT_USERNAME?.trim() || "patient_demo");
+  const patientPassword = targetEnv.DEMO_PATIENT_PASSWORD || "patient123";
+  const staffUsername = validateUsername(targetEnv.DEMO_STAFF_USERNAME?.trim() || "staff_demo");
+  const staffPassword = targetEnv.DEMO_STAFF_PASSWORD || "staff123";
+
+  const users: SeedUserConfig[] = [
+    {
+      username: patientUsername,
+      role: "patient",
+      password: patientPassword,
+      description: "Учебный пациент (просмотр и отметка задач, барьеры, напоминания)",
+    },
+    {
+      username: staffUsername,
+      role: "staff",
+      password: staffPassword,
+      description: "Сотрудник стенда (все права пациента + генерация QR и выдача памяток)",
+    },
+  ];
+
+  const demoAccountsRaw = targetEnv.DEMO_ACCOUNTS?.trim();
+  if (demoAccountsRaw) {
+    if (demoAccountsRaw.startsWith("[") || demoAccountsRaw.startsWith("{")) {
+      let items: unknown[] = [];
+      try {
+        const parsed = JSON.parse(demoAccountsRaw);
+        items = Array.isArray(parsed) ? parsed : [parsed];
+      } catch (err) {
+        console.warn("Failed to parse DEMO_ACCOUNTS as JSON:", err);
+      }
+
+      for (const item of items) {
+        if (!item || typeof item !== "object") {
+          console.warn("Skipping invalid DEMO_ACCOUNTS JSON entry (not an object):", item);
+          continue;
+        }
+        const record = item as Record<string, unknown>;
+        if (record.username === undefined || record.password === undefined || record.role === undefined) {
+          console.warn("Skipping invalid DEMO_ACCOUNTS JSON entry (missing required fields):", item);
+          continue;
+        }
+        const username = validateUsername(record.username);
+        const role = validateRole(typeof record.role === "string" ? record.role.trim() : record.role);
+        users.push({
+          username,
+          role,
+          password: String(record.password),
+          description:
+            typeof record.description === "string" && record.description.trim()
+              ? record.description.trim()
+              : `Демо-аккаунт (${role})`,
+        });
+      }
+    } else {
+      const entries = demoAccountsRaw.split(",").map((s) => s.trim()).filter(Boolean);
+      for (const entry of entries) {
+        const parts = entry.split(":");
+        if (parts.length < 3) {
+          console.warn(
+            `Malformed entry in DEMO_ACCOUNTS: "${entry}". Expected format: username:password:role[:description]`
+          );
+          continue;
+        }
+        const [rawUser, rawPass, rawRole, ...rest] = parts;
+        if (!rawUser || !rawPass || !rawRole) {
+          console.warn(`Malformed entry in DEMO_ACCOUNTS: "${entry}". Missing user, password, or role.`);
+          continue;
+        }
+        const username = validateUsername(rawUser);
+        const role = validateRole(rawRole.trim());
+        const desc = rest.join(":").trim();
+        users.push({
+          username,
+          role,
+          password: rawPass,
+          description: desc || `Демо-аккаунт (${role})`,
+        });
+      }
+    }
+  }
+
+  return users;
+}
+
+export async function seedAccounts(
+  databasePath: string,
+  users?: SeedUserConfig[]
+): Promise<{ user: string; role: string; action: "создан" | "обновлён" }[]> {
+  const seedUsers = users ?? parseSeedUsersFromEnv();
+  const db = openDatabase(databasePath);
+  const results: { user: string; role: string; action: "создан" | "обновлён" }[] = [];
+
+  try {
+    for (const item of seedUsers) {
+      const normalizedUsername = validateUsername(item.username);
+      const role = validateRole(item.role);
+
+      const existing = db
+        .prepare("SELECT id FROM users WHERE username = ?")
+        .get(normalizedUsername);
+
+      if (existing) {
+        await resetPassword({
+          databasePath,
+          username: normalizedUsername,
+          password: item.password,
+        });
+        results.push({
+          user: normalizedUsername,
+          role,
+          action: "обновлён",
+        });
+      } else {
+        await createAccount({
+          databasePath,
+          username: normalizedUsername,
+          role,
+          password: item.password,
+        });
+        results.push({
+          user: normalizedUsername,
+          role,
+          action: "создан",
+        });
+      }
+    }
+  } finally {
+    db.close();
+  }
+
+  return results;
+}

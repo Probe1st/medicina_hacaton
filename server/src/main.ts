@@ -3,6 +3,7 @@ import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadConfig } from "./config";
 import { buildServer } from "./app";
+import { seedAccounts } from "./accounts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const envFileInServer = resolve(__dirname, "../.env");
@@ -34,6 +35,18 @@ async function main(): Promise<void> {
   process.on("SIGINT", stop);
 
   try {
+    const shouldAutoSeed =
+      process.env.AUTO_SEED_DEMO === "true" ||
+      (process.env.AUTO_SEED_DEMO !== "false" && config.nodeEnv === "development");
+
+    if (shouldAutoSeed) {
+      const results = await seedAccounts(config.databasePath);
+      console.log(
+        "Demo accounts seeded:",
+        results.map((r) => `${r.user} (${r.role})`).join(", ")
+      );
+    }
+
     await app.listen({ host: "127.0.0.1", port: config.port });
     console.log(`Server listening at http://127.0.0.1:${config.port}`);
   } catch (err) {
