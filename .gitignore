@@ -1,0 +1,12 @@
+.omp/
+node_modules/
+dist/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
+test-results/
+playwright-report/
+.env
+.env.*
+!.env.example
